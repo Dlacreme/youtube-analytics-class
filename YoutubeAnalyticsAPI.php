@@ -69,7 +69,13 @@ class YoutubeAnalytics {
 	** Bool - Print Error
 	** If it's true, error will be print
 	*/
+	private $printError;
 
+	/*
+	** String - url Query
+	** Url of the API
+	*/
+	private $url_query = 'https://www.googleapis.com/youtube/analytics/v1/reports?';
 
 
 	// CTor
@@ -78,8 +84,7 @@ class YoutubeAnalytics {
 		$this->clientId = $clientId;
 		$this->clientSecret = $clientSecret;
 		$this->channel = 'MINE';
-		$this->scope = 'https://www.googleapis.com/auth/userinfo.profile+https://www.googleapis.com/auth/yt-analytics.readonly+https://www.googleapis.com/auth/yt-analytics-monetary.readonly';
-	
+		$this->scope = 'https://www.googleapis.com/auth/userinfo.profile+https://www.googleapis.com/auth/yt-analytics.readonly+https://www.googleapis.com/auth/yt-analytics-monetary.readonly';	
 		$this->redirect = $redirect ? $redirect : 'http://' . $_SERVER['HTTP_HOST'] . $_SERVER['PHP_SELF'];
 
 		// If it's a callback from startAuthentication
@@ -98,10 +103,6 @@ class YoutubeAnalytics {
 	/*******************************
 	**	Public Methods - Queries  **
 	*/
-
-	public function getChannelFromUser() {
-		
-	}
 
 	public function listVideos() {
 		if (!$this->isTokenValid())
@@ -123,36 +124,83 @@ class YoutubeAnalytics {
 		var_dump(header('Location:' . filter_var($url, FILTER_SANITIZE_URL) . 'authorization= ' . $authorization));
 */
 
+		$now = new DateTime('now');
+		$now = $now->format('Y-m-d');
+
 		$data = array(
 			'ids' => 'channel==' . $this->channel,
 			'start-date' => '2013-03-01',
-			'end-date' => '2013-03-31',
+			'end-date' => $now,
 			'metrics' => 'views'
 		);
 
-		$dataStr = http_build_query($data);
-		$url_query = 'https://www.googleapis.com/youtube/analytics/v1/reports?' . $dataStr;
-		if (!($re = curl_init()))
-			return ($this->printError('listVideos - Fail curl_init'));
+		return ($this->execQuery($data, 'listVideos'));
+	}
 
-		$conf = array(
-			CURLOPT_URL => $url_query,
-			CURLOPT_RETURNTRANSFER => 1,
-			CURLOPT_HEADER => 0,
-			CURLOPT_HTTPHEADER => array(
-				'Content-Type: application/x-www-form-urlencoded',
-				'Authorization: Bearer ' . $this->access_token
-			),
+	public function geographicInfo($country = 'Europe') {
+		if (!$this->isTokenValid())
+			$this->startAuthentication();
+
+		$ret = array();
+
+		$now = new DateTime('now');
+		$now = $now->format('Y-m-d');
+
+		/* Country-specific watch time metrics for a channel's videos
+		** This query retrieves country-specific viewcounts, watch time metrics, and subscription figures for a channel's videos. The report returns one row of data for each country where the channel's videos were watched. Rows are sorted in descending order of number of minutes watched.
+		** &&
+		** This request retrieves country-specific viewcounts, annotation click-through rates, annotation close rates, and annotation impressions for the channel's videos. Results are sorted by annotation click-through rate in descending order, which means that the country with the highest annotation click-through rate will be listed first.
+		**
+		** dimensions=country
+		** metrics=views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained
+		** sort=-estimatedMinutesWatched
+		*/
+		$data = array(
+			'ids' => 'channel==' . $this->channel,
+			'start-date' => '2013-03-01',
+			'end-date' => $now,
+			'dimensions' => 'country',
+			'metrics' => 'views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,likes,annotationClickThroughRate,annotationCloseRate,annotationImpressions',
+			'sort' => '-estimatedMinutesWatched'
 		);
+		array_push($ret, $this->execQuery($data));
 
-		if (!curl_setopt_array($re, $conf))
-			return ($this->printError('listVideos - Fail curl_setopt_array'));
+		/* Top 10 – Most viewed videos in a specific country or Europe
+		** This query retrieves the channel's 10 most viewed videos, as measured by number of views during the specified date range, in a specified country. Results are sorted by viewcount in descending order.
+		**
+		** dimensions=video
+		** metrics=views,estimatedMinutesWatched,likes,subscribersGained
+		** filters=country==France
+		** max-results=10
+		** sort=-views
+		*/
 
-		if (!($res = curl_exec($re)))
-			return ($this->printError('listVideos - Fail curl_exec'));
+		if ($country == 'Europe') {
+			$data = array(
+				'ids' => 'channel==' . $this->channel,
+				'start-date' => '2013-03-01',
+				'end-date' => $now,
+				'dimension' => 'video',
+				'metrics' => 'views,estimatedMinutesWatched,likes,subscribersGained',
+				'filters' => 'continent==150',
+				'max-results' => '10',
+				'sort' => '-views'
+			);
+		} else {
+			$data = array(
+				'ids' => 'channel==' . $this->channel,
+				'start-date' => '2013-03-01',
+				'end-date' => $now,
+				'dimension' => 'video',
+				'metrics' => 'views,estimatedMinutesWatched,likes,subscribersGained',
+				'filters' => 'country==' . $country,
+				'max-results' => '10',
+				'sort' => '-views'
+			);
+		}
+		array_push($ret, $this->execQuery($data));
 
-		curl_close($re);
-		return ($res);
+		return ($ret);
 	}
 
 
@@ -242,6 +290,36 @@ class YoutubeAnalytics {
 			$this->expire = $_SESSION['google_token_expire'] = $res->expires_in;
 		}
 		return (true);
+	}
+
+	/*
+	**	Query builder - return the result as json file
+	*/
+	private function execQuery($data, $error = '') {
+
+		$dataStr = http_build_query($data);
+		$url_query = $this->url_query . $dataStr;
+		$conf = array(
+			CURLOPT_URL => $url_query,
+			CURLOPT_RETURNTRANSFER => 1,
+			CURLOPT_HEADER => 0,
+			CURLOPT_HTTPHEADER => array(
+				'Content-Type: application/x-www-form-urlencoded',
+				'Authorization: Bearer ' . $this->access_token
+			),
+		);
+
+		if (!($re = curl_init()))
+			return ($this->printError($error . ' - Fail curl_init'));
+
+		if (!curl_setopt_array($re, $conf))
+			return ($this->printError($error . ' - Fail curl_setopt_array'));
+
+		if (!($res = curl_exec($re)))
+			return ($this->printError($error . ' - Fail curl_exec'));
+
+		curl_close($re);
+		return ($res);
 	}
 
 
